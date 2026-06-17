@@ -4,19 +4,26 @@
   "main": "index.ts",
   "dependencies": {
     "expo": "~54.0.35",
+    "expo-constants": "~18.0.13",
+    "expo-image-picker": "~17.0.11",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-native": "0.81.5"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "nodemon": "^3.1.14",
     "typescript": "~5.9.2"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "backend": "nodemon backend/server.js",
+    "backend:node": "node backend/server.js",
+    "test": "node backend/server.test.js",
+    "typecheck": "tsc --noEmit"
   },
   "private": true
 }
