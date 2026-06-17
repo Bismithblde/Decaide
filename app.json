@@ -20,6 +20,16 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow Decaide to use your camera to photograph menus.",
+          "photosPermission": "Allow Decaide to choose menu photos from your library.",
+          "microphonePermission": false
+        }
+      ]
+    ]
   }
 }
