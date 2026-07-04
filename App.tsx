@@ -1,22 +1,24 @@
 import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
 import { useMemo, useRef, useState } from "react";
+import { BlurView } from "expo-blur";
 import {
   ActivityIndicator,
   Alert,
   Animated,
   Easing,
-  Image,
+  Image as RNImage,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 
 type PickedMenuImage = {
   uri: string;
@@ -67,6 +69,14 @@ const CASE_ROLL_EASING_GRAPH = [
   { time: 1, value: 1 },
 ];
 
+const SAMPLE_ITEMS: MenuFoodItem[] = [
+  { name: "Charred Heirloom Tomato", description: "veg", price: "$14" },
+  { name: "Wood-Fired Focaccia", description: "share", price: "$9" },
+  { name: "Saffron Risotto", description: "chef's", price: "$24" },
+  { name: "Grilled Branzino", description: "fish", price: "$32" },
+  { name: "Pistachio Olive Cake", description: "sweet", price: "$11" },
+];
+
 function caseRollEasing(progress: number) {
   for (let index = 1; index < CASE_ROLL_EASING_GRAPH.length; index += 1) {
     const previous = CASE_ROLL_EASING_GRAPH[index - 1];
@@ -76,9 +86,7 @@ function caseRollEasing(progress: number) {
       const localProgress =
         (progress - previous.time) / (next.time - previous.time);
 
-      return (
-        previous.value + (next.value - previous.value) * localProgress
-      );
+      return previous.value + (next.value - previous.value) * localProgress;
     }
   }
 
@@ -103,52 +111,97 @@ function buildCaseSequence(items: string[], winner: string) {
   return sequence;
 }
 
+function normalizeDish(item: MenuFoodItem, index: number) {
+  const fallback = SAMPLE_ITEMS[index % SAMPLE_ITEMS.length];
+  const label = (item.description || fallback.description || "menu")
+    .split(/[,.]/)[0]
+    .trim()
+    .slice(0, 7);
+
+  return {
+    name: item.name || fallback.name,
+    price: item.price || fallback.price,
+    tag: label || fallback.description,
+  };
+}
+
 export default function App() {
   const [image, setImage] = useState<PickedMenuImage | null>(null);
   const [result, setResult] = useState<OcrResult | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [storeName, setStoreName] = useState("");
-  const [location, setLocation] = useState("");
   const [selectedFood, setSelectedFood] = useState("");
   const [caseVisible, setCaseVisible] = useState(false);
   const [caseDone, setCaseDone] = useState(false);
   const [rollingFoods, setRollingFoods] = useState<string[]>([]);
+  const [sheetVisible, setSheetVisible] = useState(false);
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const rollProgress = useRef(new Animated.Value(0)).current;
   const finalScale = useRef(new Animated.Value(0.94)).current;
+  const sheetProgress = useRef(new Animated.Value(0)).current;
 
-  const foodNames = useMemo(
-    () => (result?.foodItems || []).map((item) => item.name).filter(Boolean),
+  const parsedItems = useMemo(
+    () =>
+      result?.foodItems.length
+        ? result.foodItems.slice(0, 5).map(normalizeDish)
+        : [],
     [result],
+  );
+  const foodNames = useMemo(
+    () => parsedItems.map((item) => item.name).filter(Boolean),
+    [parsedItems],
   );
   const rollTranslateY = rollProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [76 - Math.max(rollingFoods.length - 1, 0) * 44, 76],
   });
   const finalItemStyle = {
+    transform: [{ scale: finalScale }],
+  };
+  const animatedSheetStyle = {
+    opacity: sheetProgress,
     transform: [
       {
-        scale: finalScale,
+        translateY: sheetProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [-330, 0],
+        }),
       },
     ],
   };
+  const animatedBlurStyle = {
+    opacity: sheetProgress,
+  };
+  const animatedDimStyle = {
+    opacity: sheetProgress,
+  };
 
-  const statusText = useMemo(() => {
-    if (isSubmitting) {
-      return "Reading menu text";
-    }
+  const openSheet = () => {
+    sheetProgress.stopAnimation();
+    sheetProgress.setValue(0);
+    setSheetVisible(true);
+    Animated.spring(sheetProgress, {
+      toValue: 1,
+      damping: 22,
+      mass: 0.82,
+      stiffness: 235,
+      useNativeDriver: false,
+    }).start();
+  };
 
-    if (result) {
-      return `OCR confidence: ${result.confidence}`;
-    }
-
-    if (image) {
-      return "Image ready";
-    }
-
-    return "No menu selected";
-  }, [image, isSubmitting, result]);
+  const closeSheet = () => {
+    sheetProgress.stopAnimation();
+    Animated.timing(sheetProgress, {
+      toValue: 0,
+      duration: 210,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (finished) {
+        setSheetVisible(false);
+      }
+    });
+  };
 
   const openCase = (items = foodNames) => {
     const nextFood = pickRandomItem(items);
@@ -203,6 +256,7 @@ export default function App() {
   };
 
   const selectImage = async (source: "camera" | "gallery") => {
+    closeSheet();
     setError(null);
     setResult(null);
     setSelectedFood("");
@@ -279,8 +333,8 @@ export default function App() {
         body: JSON.stringify({
           imageBase64: image.base64,
           mimeType: image.mimeType,
-          storeName,
-          location,
+          storeName: "",
+          location: "",
         }),
       });
       const payload = await response.json();
@@ -288,8 +342,6 @@ export default function App() {
       if (!response.ok) {
         throw new Error(payload.message || "Menu OCR failed.");
       }
-
-      console.log("menu OCR payload foodItems", payload.foodItems);
 
       const foodItems: MenuFoodItem[] = Array.isArray(payload.foodItems)
         ? payload.foodItems
@@ -319,158 +371,227 @@ export default function App() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.nav}>
-          <Text style={styles.brand}>Decaide</Text>
-          <View style={styles.statusPill}>
-            <View
-              style={[
-                styles.statusDot,
-                result ? styles.statusDotActive : undefined,
-              ]}
-            />
-            <Text style={styles.statusText}>{statusText}</Text>
-          </View>
-        </View>
 
-        <View style={styles.hero}>
-          <View style={styles.heroCopy}>
-            <Text style={styles.title}>
-              Photograph a menu. Pull out the text.
-            </Text>
-            <Text style={styles.subtitle}>
-              A small test bench for the menu OCR route: take a fresh photo or
-              choose a saved menu, then send it to the backend.
-            </Text>
-          </View>
+      <View style={styles.screen}>
+        {result && image ? (
+          <View style={styles.parsedWrap}>
+            <View style={styles.photoCard}>
+              <RNImage
+                source={{ uri: image.uri }}
+                style={styles.photoImage}
+                resizeMode="cover"
+              />
+              <Pressable
+                accessibilityRole="button"
+                style={styles.photoClose}
+                onPress={() => {
+                  setImage(null);
+                  setResult(null);
+                  setError(null);
+                }}
+              >
+                <Ionicons name="close" color="#F7F9FB" size={21} />
+              </Pressable>
+              <View style={styles.readyBadge}>
+                <Ionicons name="checkmark" color="#9DC7E5" size={14} />
+                <Text style={styles.readyText}>Menu ready</Text>
+              </View>
+            </View>
 
-          <View style={styles.actions}>
+            <View style={styles.resultsCard}>
+              <View style={styles.resultsHeader}>
+                <View style={styles.resultsTitleWrap}>
+                  <View style={styles.iconBubbleSmall}>
+                    <Ionicons name="sparkles" color="#0B1115" size={21} />
+                  </View>
+                  <Text style={styles.resultsTitle}>
+                    Parsed {parsedItems.length} dishes
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setResult(null);
+                    setImage(null);
+                    setError(null);
+                    openSheet();
+                  }}
+                >
+                  <Text style={styles.newScanText}>New scan</Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.dishList}>
+                {parsedItems.map((item) => (
+                  <View key={`${item.name}-${item.price}`} style={styles.dishRow}>
+                    <Text style={styles.dishTag}>{item.tag.toUpperCase()}</Text>
+                    <Text numberOfLines={1} style={styles.dishName}>
+                      {item.name}
+                    </Text>
+                    <Text style={styles.dishPrice}>{item.price}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <Pressable
+                disabled={foodNames.length === 0}
+                style={({ pressed }) => [
+                  styles.gambleButton,
+                  pressed && foodNames.length > 0 && styles.buttonPressed,
+                ]}
+                onPress={() => openCase()}
+              >
+                <MaterialCommunityIcons
+                  name="dice-5-outline"
+                  color="#071014"
+                  size={20}
+                />
+                <Text style={styles.gambleText}>Can't decide? Gamble</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.uploadWrap}>
             <Pressable
+              accessibilityRole="button"
               style={({ pressed }) => [
-                styles.primaryButton,
+                styles.uploadBox,
+                pressed && styles.uploadBoxPressed,
+              ]}
+              onPress={openSheet}
+            >
+              {image ? (
+                <>
+                  <RNImage
+                    source={{ uri: image.uri }}
+                    style={styles.uploadPreviewImage}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.uploadReadyBadge}>
+                    <Ionicons name="checkmark" color="#9DC7E5" size={14} />
+                    <Text style={styles.readyText}>Menu ready</Text>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.uploadIconCircle}>
+                    <Ionicons
+                      name="restaurant-outline"
+                      color="#9DC7E5"
+                      size={34}
+                    />
+                  </View>
+                  <Text style={styles.uploadTitle}>Upload a menu</Text>
+                  <Text style={styles.uploadSubtitle}>
+                    Tap to take a photo or pick from your gallery
+                  </Text>
+                </>
+              )}
+            </Pressable>
+
+            <Pressable
+              disabled={!image || isSubmitting}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.parseButton,
+                (!image || isSubmitting) && styles.parseButtonDisabled,
+                pressed && image && !isSubmitting && styles.buttonPressed,
+              ]}
+              onPress={submitImage}
+            >
+              {isSubmitting ? (
+                <ActivityIndicator color="#A2A8B1" />
+              ) : (
+                <>
+                  <Ionicons name="sparkles-outline" color="#AEB3BB" size={21} />
+                  <Text style={styles.parseButtonText}>Parse Menu</Text>
+                </>
+              )}
+            </Pressable>
+
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          </View>
+        )}
+      </View>
+
+      <View style={styles.tabBar}>
+        <View style={styles.tabItem}>
+          <Ionicons name="home-outline" color="#07090B" size={21} />
+          <Text style={styles.tabLabelActive}>Home</Text>
+        </View>
+        <View style={styles.tabItem}>
+          <Ionicons name="bookmark-outline" color="#41464E" size={20} />
+          <Text style={styles.tabLabel}>Saved</Text>
+        </View>
+      </View>
+
+      <Modal
+        animationType="none"
+        onRequestClose={closeSheet}
+        transparent
+        visible={sheetVisible}
+      >
+        <View style={styles.sheetBackdrop}>
+          <Animated.View style={[styles.sheetBlur, animatedBlurStyle]}>
+            <BlurView intensity={42} tint="light" style={styles.sheetBlurFill} />
+          </Animated.View>
+          <Animated.View style={[styles.sheetDim, animatedDimStyle]} />
+          <Pressable
+            accessibilityLabel="Close add menu"
+            accessibilityRole="button"
+            style={styles.sheetDismissLayer}
+            onPress={closeSheet}
+          />
+          <Animated.View style={[styles.sheet, animatedSheetStyle]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Add a menu</Text>
+              <Pressable
+                accessibilityRole="button"
+                style={styles.sheetClose}
+                onPress={closeSheet}
+              >
+                <Ionicons name="close" color="#9DA3AA" size={21} />
+              </Pressable>
+            </View>
+
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.sheetOption,
                 pressed && styles.buttonPressed,
               ]}
               onPress={() => selectImage("camera")}
             >
-              <Text style={styles.primaryButtonText}>Open camera</Text>
+              <View style={styles.sheetOptionIconActive}>
+                <Ionicons name="camera-outline" color="#9DC7E5" size={21} />
+              </View>
+              <View>
+                <Text style={styles.optionTitle}>Take a photo</Text>
+                <Text style={styles.optionSubtitle}>Use your camera</Text>
+              </View>
             </Pressable>
+
             <Pressable
+              accessibilityRole="button"
               style={({ pressed }) => [
-                styles.secondaryButton,
+                styles.sheetOption,
                 pressed && styles.buttonPressed,
               ]}
               onPress={() => selectImage("gallery")}
             >
-              <Text style={styles.secondaryButtonText}>Choose photo</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        <View style={styles.previewPanel}>
-          {image ? (
-            <Image
-              source={{ uri: image.uri }}
-              style={styles.previewImage}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={styles.emptyPreview}>
-              <Text style={styles.emptyTitle}>Menu preview</Text>
-              <Text style={styles.emptyText}>
-                Use the camera button or gallery picker to load a test image.
-              </Text>
-            </View>
-          )}
-        </View>
-
-        <View style={styles.detailsPanel}>
-          <Text style={styles.detailsTitle}>Optional online match</Text>
-          <TextInput
-            autoCapitalize="words"
-            onChangeText={setStoreName}
-            placeholder="Store name"
-            placeholderTextColor="#8F8776"
-            style={styles.input}
-            value={storeName}
-          />
-          <TextInput
-            autoCapitalize="words"
-            onChangeText={setLocation}
-            placeholder="Location or address"
-            placeholderTextColor="#8F8776"
-            style={styles.input}
-            value={location}
-          />
-        </View>
-
-        <Pressable
-          disabled={!image || isSubmitting}
-          style={({ pressed }) => [
-            styles.submitButton,
-            (!image || isSubmitting) && styles.submitButtonDisabled,
-            pressed && image && !isSubmitting && styles.buttonPressed,
-          ]}
-          onPress={submitImage}
-        >
-          {isSubmitting ? (
-            <ActivityIndicator color="#F9F6EF" />
-          ) : (
-            <Text style={styles.submitButtonText}>Extract menu text</Text>
-          )}
-        </Pressable>
-
-        {error ? (
-          <View style={styles.errorPanel}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        ) : null}
-
-        {result ? (
-          <View style={styles.resultPanel}>
-            <View style={styles.resultHeader}>
-              <Text style={styles.resultTitle}>Food names</Text>
-              <Text style={styles.confidence}>{result.confidence}</Text>
-            </View>
-            <Text style={styles.debugText}>
-              Backend items: {result.debugFoodItemNames}
-            </Text>
-            {foodNames.length > 0 ? (
-              <View style={styles.foodList}>
-                {foodNames.map((foodName) => (
-                  <View key={foodName} style={styles.foodChip}>
-                    <Text style={styles.foodChipText}>{foodName}</Text>
-                  </View>
-                ))}
+              <View style={styles.sheetOptionIcon}>
+                <Ionicons name="image-outline" color="#A4A9B0" size={21} />
               </View>
-            ) : (
-              <Text style={styles.resultText}>No food names were found.</Text>
-            )}
-
-            <Pressable
-              disabled={foodNames.length === 0}
-              style={({ pressed }) => [
-                styles.drawButton,
-                foodNames.length === 0 && styles.drawButtonDisabled,
-                pressed && foodNames.length > 0 && styles.buttonPressed,
-              ]}
-              onPress={() => openCase()}
-            >
-              <Text style={styles.drawButtonText}>Open case</Text>
+              <View>
+                <Text style={styles.optionTitle}>Choose from gallery</Text>
+                <Text style={styles.optionSubtitle}>Pick an existing image</Text>
+              </View>
             </Pressable>
-            {result.warnings.length > 0 ? (
-              <Text style={styles.noteText}>{result.warnings.join(" ")}</Text>
-            ) : null}
-            {result.uncertainText.length > 0 ? (
-              <Text style={styles.noteText}>
-                Uncertain: {result.uncertainText.join(", ")}
-              </Text>
-            ) : null}
-          </View>
-        ) : null}
-      </ScrollView>
+          </Animated.View>
+        </View>
+      </Modal>
+
       {caseVisible ? (
         <Animated.View
           pointerEvents="auto"
@@ -528,274 +649,379 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#141412",
+    backgroundColor: "#07090B",
   },
-  content: {
-    paddingHorizontal: 20,
-    paddingBottom: 36,
+  screen: {
+    alignItems: "center",
+    flex: 1,
+    paddingHorizontal: 28,
   },
-  nav: {
+  uploadWrap: {
+    alignItems: "center",
+    paddingTop: 26,
+    width: "100%",
+  },
+  uploadBox: {
+    alignItems: "center",
+    backgroundColor: "#17191B",
+    borderColor: "#4F6479",
+    borderRadius: 41,
+    borderStyle: "dashed",
+    borderWidth: 1.5,
+    height: 325,
+    justifyContent: "center",
+    maxWidth: 408,
+    overflow: "hidden",
+    paddingHorizontal: 24,
+    width: "100%",
+  },
+  uploadBoxPressed: {
+    opacity: 0.86,
+  },
+  uploadIconCircle: {
+    alignItems: "center",
+    backgroundColor: "#25292E",
+    borderRadius: 32,
+    height: 65,
+    justifyContent: "center",
+    marginBottom: 18,
+    width: 65,
+  },
+  uploadTitle: {
+    color: "#F7F9FB",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: 0,
+    lineHeight: 24,
+    marginBottom: 6,
+  },
+  uploadSubtitle: {
+    color: "#A8B7C7",
+    fontSize: 14,
+    fontWeight: "500",
+    letterSpacing: 0,
+    lineHeight: 20,
+    textAlign: "center",
+  },
+  uploadPreviewImage: {
+    height: "100%",
+    left: 0,
+    position: "absolute",
+    top: 0,
+    width: "100%",
+  },
+  uploadReadyBadge: {
+    alignItems: "center",
+    backgroundColor: "rgba(37, 41, 42, 0.94)",
+    borderRadius: 8,
+    bottom: 14,
+    flexDirection: "row",
+    gap: 7,
+    left: 16,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    position: "absolute",
+  },
+  parseButton: {
+    alignItems: "center",
+    backgroundColor: "#25282C",
+    borderRadius: 32,
+    flexDirection: "row",
+    gap: 10,
+    height: 64,
+    justifyContent: "center",
+    marginTop: 13,
+    maxWidth: 408,
+    width: "100%",
+  },
+  parseButtonDisabled: {
+    opacity: 0.92,
+  },
+  parseButtonText: {
+    color: "#AEB3BB",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: 0,
+  },
+  errorText: {
+    color: "#FFC9C9",
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+    marginTop: 14,
+    maxWidth: 408,
+    textAlign: "center",
+  },
+  parsedWrap: {
+    alignItems: "center",
+    paddingTop: 20,
+    width: "100%",
+  },
+  photoCard: {
+    backgroundColor: "#17191B",
+    borderRadius: 36,
+    height: 327,
+    maxWidth: 454,
+    overflow: "hidden",
+    width: "100%",
+  },
+  photoImage: {
+    height: "100%",
+    opacity: 0.74,
+    width: "100%",
+  },
+  photoClose: {
+    alignItems: "center",
+    backgroundColor: "#22262A",
+    borderRadius: 20,
+    height: 38,
+    justifyContent: "center",
+    position: "absolute",
+    right: 15,
+    top: 14,
+    width: 38,
+  },
+  readyBadge: {
+    alignItems: "center",
+    backgroundColor: "#25292A",
+    borderRadius: 8,
+    bottom: 14,
+    flexDirection: "row",
+    gap: 7,
+    left: 16,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    position: "absolute",
+  },
+  readyText: {
+    color: "#F7F9FB",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  resultsCard: {
+    backgroundColor: "#151719",
+    borderColor: "#2B2E32",
+    borderRadius: 41,
+    borderWidth: 1,
+    marginTop: 12,
+    maxWidth: 454,
+    padding: 21,
+    width: "100%",
+  },
+  resultsHeader: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingTop: 12,
-    paddingBottom: 28,
+    marginBottom: 18,
   },
-  brand: {
-    color: "#F9F6EF",
-    fontFamily: Platform.select({ ios: "Georgia", default: "serif" }),
-    fontSize: 24,
-    letterSpacing: 0,
-  },
-  statusPill: {
+  resultsTitleWrap: {
     alignItems: "center",
-    backgroundColor: "#26231D",
-    borderColor: "#3A352C",
-    borderRadius: 999,
-    borderWidth: 1,
     flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    gap: 11,
   },
-  statusDot: {
-    backgroundColor: "#8F8776",
-    borderRadius: 999,
-    height: 7,
-    width: 7,
+  iconBubbleSmall: {
+    alignItems: "center",
+    backgroundColor: "#9DC7E5",
+    borderRadius: 17,
+    height: 34,
+    justifyContent: "center",
+    width: 34,
   },
-  statusDotActive: {
-    backgroundColor: "#A7E8BD",
-  },
-  statusText: {
-    color: "#D7D0C2",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  hero: {
-    backgroundColor: "#F2EADD",
-    borderRadius: 28,
-    overflow: "hidden",
-    padding: 22,
-  },
-  heroCopy: {
-    gap: 14,
-  },
-  title: {
-    color: "#171512",
-    fontSize: 42,
+  resultsTitle: {
+    color: "#F7F9FB",
+    fontSize: 18,
     fontWeight: "900",
     letterSpacing: 0,
-    lineHeight: 43,
   },
-  subtitle: {
-    color: "#5D5548",
-    fontSize: 16,
-    fontWeight: "600",
-    lineHeight: 23,
+  newScanText: {
+    color: "#9DC7E5",
+    fontSize: 14,
+    fontWeight: "800",
   },
-  actions: {
+  dishList: {
+    gap: 8,
+  },
+  dishRow: {
+    alignItems: "center",
+    backgroundColor: "#1B1E20",
+    borderRadius: 23,
+    flexDirection: "row",
+    height: 43,
+    paddingLeft: 17,
+    paddingRight: 14,
+  },
+  dishTag: {
+    backgroundColor: "#7791A5",
+    borderRadius: 11,
+    color: "#11161A",
+    fontSize: 10,
+    fontWeight: "900",
+    marginRight: 13,
+    minWidth: 37,
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    textAlign: "center",
+  },
+  dishName: {
+    color: "#F7F9FB",
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "900",
+    letterSpacing: 0,
+  },
+  dishPrice: {
+    color: "#F7F9FB",
+    fontSize: 14,
+    fontWeight: "900",
+    marginLeft: 12,
+  },
+  gambleButton: {
+    alignItems: "center",
+    backgroundColor: "#9DC7E5",
+    borderRadius: 28,
     flexDirection: "row",
     gap: 10,
-    marginTop: 26,
-  },
-  primaryButton: {
-    alignItems: "center",
-    backgroundColor: "#171512",
-    borderRadius: 18,
-    flex: 1,
-    minHeight: 54,
+    height: 56,
     justifyContent: "center",
-    paddingHorizontal: 16,
+    marginTop: 17,
   },
-  primaryButtonText: {
-    color: "#F9F6EF",
-    fontSize: 15,
+  gambleText: {
+    color: "#071014",
+    fontSize: 16,
+    fontWeight: "900",
+    letterSpacing: 0,
+  },
+  tabBar: {
+    alignItems: "center",
+    alignSelf: "center",
+    backgroundColor: "#F0F3F6",
+    borderRadius: 31,
+    bottom: 8,
+    flexDirection: "row",
+    height: 61,
+    justifyContent: "space-around",
+    paddingHorizontal: 40,
+    position: "absolute",
+    width: 321,
+  },
+  tabItem: {
+    alignItems: "center",
+    gap: 4,
+    width: 86,
+  },
+  tabLabelActive: {
+    color: "#07090B",
+    fontSize: 10,
     fontWeight: "900",
   },
-  secondaryButton: {
-    alignItems: "center",
-    backgroundColor: "#D7CDBA",
-    borderRadius: 18,
-    flex: 1,
-    minHeight: 54,
-    justifyContent: "center",
-    paddingHorizontal: 16,
+  tabLabel: {
+    color: "#41464E",
+    fontSize: 10,
+    fontWeight: "500",
   },
-  secondaryButtonText: {
-    color: "#171512",
+  sheetBackdrop: {
+    flex: 1,
+  },
+  sheetBlur: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  sheetBlurFill: {
+    flex: 1,
+  },
+  sheetDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(220, 223, 224, 0.5)",
+  },
+  sheetDismissLayer: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  sheet: {
+    alignSelf: "center",
+    backgroundColor: "#17191B",
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    maxWidth: 448,
+    paddingBottom: 23,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    width: "100%",
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    backgroundColor: "#34373B",
+    borderRadius: 3,
+    height: 6,
+    marginBottom: 25,
+    width: 48,
+  },
+  sheetHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 20,
+  },
+  sheetTitle: {
+    color: "#F7F9FB",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  sheetClose: {
+    alignItems: "center",
+    backgroundColor: "#25292E",
+    borderRadius: 16,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
+  sheetOption: {
+    alignItems: "center",
+    borderColor: "#2D3137",
+    borderRadius: 40,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 16,
+    height: 78,
+    marginBottom: 10,
+    paddingHorizontal: 17,
+  },
+  sheetOptionIconActive: {
+    alignItems: "center",
+    backgroundColor: "#27323E",
+    borderRadius: 22,
+    height: 45,
+    justifyContent: "center",
+    width: 45,
+  },
+  sheetOptionIcon: {
+    alignItems: "center",
+    backgroundColor: "#17191B",
+    borderColor: "#2D3137",
+    borderRadius: 22,
+    borderWidth: 1,
+    height: 45,
+    justifyContent: "center",
+    width: 45,
+  },
+  optionTitle: {
+    color: "#F7F9FB",
     fontSize: 15,
     fontWeight: "900",
+    lineHeight: 20,
+  },
+  optionSubtitle: {
+    color: "#AEB6C1",
+    fontSize: 13,
+    fontWeight: "500",
+    lineHeight: 18,
   },
   buttonPressed: {
     opacity: 0.72,
     transform: [{ scale: 0.98 }],
   },
-  previewPanel: {
-    backgroundColor: "#22201C",
-    borderColor: "#383229",
-    borderRadius: 26,
-    borderWidth: 1,
-    height: 340,
-    marginTop: 18,
-    overflow: "hidden",
-  },
-  previewImage: {
-    height: "100%",
-    width: "100%",
-  },
-  emptyPreview: {
-    alignItems: "center",
-    flex: 1,
-    justifyContent: "center",
-    padding: 28,
-  },
-  emptyTitle: {
-    color: "#F2EADD",
-    fontSize: 22,
-    fontWeight: "900",
-    marginBottom: 10,
-  },
-  emptyText: {
-    color: "#AFA697",
-    fontSize: 15,
-    fontWeight: "600",
-    lineHeight: 22,
-    textAlign: "center",
-  },
-  detailsPanel: {
-    backgroundColor: "#22201C",
-    borderColor: "#383229",
-    borderRadius: 22,
-    borderWidth: 1,
-    gap: 10,
-    marginTop: 14,
-    padding: 14,
-  },
-  detailsTitle: {
-    color: "#F2EADD",
-    fontSize: 14,
-    fontWeight: "900",
-  },
-  input: {
-    backgroundColor: "#171512",
-    borderColor: "#383229",
-    borderRadius: 16,
-    borderWidth: 1,
-    color: "#F9F6EF",
-    fontSize: 15,
-    fontWeight: "700",
-    minHeight: 50,
-    paddingHorizontal: 14,
-  },
-  submitButton: {
-    alignItems: "center",
-    backgroundColor: "#B65E3B",
-    borderRadius: 20,
-    justifyContent: "center",
-    marginTop: 14,
-    minHeight: 58,
-  },
-  submitButtonDisabled: {
-    backgroundColor: "#564D42",
-  },
-  submitButtonText: {
-    color: "#F9F6EF",
-    fontSize: 16,
-    fontWeight: "900",
-  },
-  errorPanel: {
-    backgroundColor: "#3A1F1A",
-    borderColor: "#7B3B2D",
-    borderRadius: 18,
-    borderWidth: 1,
-    marginTop: 14,
-    padding: 16,
-  },
-  errorText: {
-    color: "#FFD8CD",
-    fontSize: 14,
-    fontWeight: "700",
-    lineHeight: 20,
-  },
-  resultPanel: {
-    backgroundColor: "#F9F6EF",
-    borderRadius: 24,
-    marginTop: 18,
-    padding: 18,
-  },
-  resultHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-  resultTitle: {
-    color: "#171512",
-    fontSize: 20,
-    fontWeight: "900",
-  },
-  confidence: {
-    backgroundColor: "#171512",
-    borderRadius: 999,
-    color: "#F9F6EF",
-    fontSize: 12,
-    fontWeight: "900",
-    overflow: "hidden",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    textTransform: "uppercase",
-  },
-  resultText: {
-    color: "#24211C",
-    fontSize: 15,
-    fontWeight: "600",
-    lineHeight: 22,
-  },
-  debugText: {
-    color: "#7A6B58",
-    fontSize: 12,
-    fontWeight: "800",
-    lineHeight: 17,
-    marginBottom: 12,
-  },
-  foodList: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  foodChip: {
-    backgroundColor: "#E6DDCD",
-    borderColor: "#D3C5AE",
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  foodChipText: {
-    color: "#24211C",
-    fontSize: 13,
-    fontWeight: "900",
-  },
-  drawButton: {
-    alignItems: "center",
-    backgroundColor: "#171512",
-    borderRadius: 16,
-    justifyContent: "center",
-    marginTop: 12,
-    minHeight: 48,
-  },
-  drawButtonDisabled: {
-    backgroundColor: "#8F8776",
-  },
-  drawButtonText: {
-    color: "#F9F6EF",
-    fontSize: 14,
-    fontWeight: "900",
-  },
   caseOverlay: {
     alignItems: "center",
-    backgroundColor: "rgba(10, 9, 8, 0.9)",
+    backgroundColor: "rgba(7, 9, 11, 0.9)",
     bottom: 0,
     justifyContent: "center",
     left: 0,
@@ -809,7 +1035,7 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   caseTitle: {
-    color: "#F9F6EF",
+    color: "#F7F9FB",
     fontSize: 14,
     fontWeight: "900",
     letterSpacing: 0,
@@ -818,20 +1044,13 @@ const styles = StyleSheet.create({
   },
   caseWindow: {
     alignItems: "center",
-    backgroundColor: "#171512",
-    borderColor: "#B65E3B",
-    borderRadius: 8,
+    backgroundColor: "#151719",
+    borderColor: "#9DC7E5",
+    borderRadius: 10,
     borderWidth: 2,
     height: 190,
     justifyContent: "center",
     overflow: "hidden",
-    shadowColor: "#000000",
-    shadowOffset: {
-      height: 12,
-      width: 0,
-    },
-    shadowOpacity: 0.32,
-    shadowRadius: 24,
     width: 190,
   },
   caseRoll: {
@@ -841,7 +1060,7 @@ const styles = StyleSheet.create({
     top: 0,
   },
   caseRollText: {
-    color: "#D7CDBA",
+    color: "#D7E9F7",
     fontSize: 15,
     fontWeight: "900",
     height: 44,
@@ -849,7 +1068,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   caseCenterLine: {
-    backgroundColor: "rgba(249, 246, 239, 0.14)",
+    backgroundColor: "rgba(247, 249, 251, 0.14)",
     height: 46,
     left: 8,
     position: "absolute",
@@ -858,9 +1077,9 @@ const styles = StyleSheet.create({
   },
   caseWinner: {
     alignItems: "center",
-    backgroundColor: "#F9F6EF",
-    borderColor: "#D7CDBA",
-    borderRadius: 6,
+    backgroundColor: "#F7F9FB",
+    borderColor: "#D7E9F7",
+    borderRadius: 8,
     borderWidth: 1,
     justifyContent: "center",
     minHeight: 108,
@@ -869,14 +1088,14 @@ const styles = StyleSheet.create({
     width: 150,
   },
   caseWinnerLabel: {
-    color: "#B65E3B",
+    color: "#638EAD",
     fontSize: 11,
     fontWeight: "900",
     marginBottom: 7,
     textTransform: "uppercase",
   },
   caseWinnerText: {
-    color: "#171512",
+    color: "#071014",
     fontSize: 21,
     fontWeight: "900",
     lineHeight: 25,
@@ -884,7 +1103,7 @@ const styles = StyleSheet.create({
   },
   caseCloseButton: {
     alignItems: "center",
-    backgroundColor: "#F9F6EF",
+    backgroundColor: "#F7F9FB",
     borderRadius: 16,
     justifyContent: "center",
     marginTop: 18,
@@ -892,15 +1111,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 26,
   },
   caseCloseText: {
-    color: "#171512",
+    color: "#071014",
     fontSize: 14,
     fontWeight: "900",
-  },
-  noteText: {
-    color: "#6A5C4C",
-    fontSize: 13,
-    fontWeight: "700",
-    lineHeight: 19,
-    marginTop: 14,
   },
 });
